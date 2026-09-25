@@ -4,3 +4,5 @@ env/
 ./dataset
 dataset/*
 dataset
+output/*
+/output

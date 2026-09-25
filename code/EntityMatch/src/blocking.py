@@ -105,7 +105,7 @@ def _write_candidate_rows(f, s1_id, others):
         writer.writerow([s1_id, other_id, score])
 
 
-def generate_candidates(s1_df, s2_df, s3_df, out_path="candidate_pairs.tsv"):
+def generate_candidates(s1_df, s2_df, s3_df, out_path="output/candidate_pairs.tsv"):
     """
     Writes candidate pairs TSV to out_path.
 
@@ -115,10 +115,10 @@ def generate_candidates(s1_df, s2_df, s3_df, out_path="candidate_pairs.tsv"):
     """
     os.makedirs(os.path.dirname(out_path) if os.path.dirname(out_path) else ".", exist_ok=True)
 
-    first_run = not os.path.exists(out_path) or os.path.getsize(out_path) == 0
-    with open(out_path, "a", newline="", encoding="utf-8") as f:
-        if first_run:
-            f.write("source1_entity_id\tcandidate_entity_id\tblock_score\n")
+    # Recreate the file on every run; appending would silently mix candidates
+    # from an earlier dataset or interrupted run into the current training set.
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        f.write("source1_entity_id\tcandidate_entity_id\tblock_score\n")
 
         vectorizer = _make_vectorizer()
         candidates = {}
@@ -158,15 +158,14 @@ def generate_candidates(s1_df, s2_df, s3_df, out_path="candidate_pairs.tsv"):
                     s1_end = min(s1_start + S1_BATCH, n_s1)
 
                     # Normalize current S1 batch
-                    s1_indices = range(s1_start, s1_end)
+                    s1_batch = s1_group.iloc[s1_start:s1_end]
                     s1_names = []
                     s1_addrs = []
-                    for i in s1_indices:
-                        row = s1_df.iloc[i]
-                        s1_names.append(normalize_name(row["business_name"]))
-                        s1_addrs.append(normalize_address(row["business_address"]))
+                    for row in s1_batch.itertuples(index=False):
+                        s1_names.append(normalize_name(row.business_name))
+                        s1_addrs.append(normalize_address(row.business_address))
 
-                    batch_ids = s1_group.iloc[s1_start:s1_end]["entity_id"].tolist()
+                    batch_ids = s1_batch["entity_id"].tolist()
                     batch_texts = _combined_text(s1_names, s1_addrs)
 
                     q_mat = vectorizer.transform(batch_texts)
@@ -204,7 +203,7 @@ def generate_candidates(s1_df, s2_df, s3_df, out_path="candidate_pairs.tsv"):
                     # Fallback: shared first name token, checked lazily
                     for local_i, s1_id in enumerate(batch_ids):
                         global_i = s1_start + local_i
-                        raw_name = s1_df.iloc[global_i]["business_name"]
+                        raw_name = s1_group.iloc[global_i]["business_name"]
                         ft = raw_name.split(" ", 1)[0] if raw_name else ""
                         if not ft or len(ft) < 3:
                             continue

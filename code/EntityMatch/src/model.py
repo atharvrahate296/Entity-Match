@@ -1,30 +1,44 @@
-"""
-Matching model: a small gradient-boosted classifier over the engineered
-pairwise features, plus a probability threshold tuned to maximize the
-macro-averaged F_0.5 metric used by the leaderboard.
-
-Model choice: scikit-learn's HistGradientBoostingClassifier.
-- Not a pretrained model at all (trained from scratch on the provided
-  features only), so it trivially satisfies the "MIT/Apache 2.0 license,
-  <=8B parameters" constraint — scikit-learn is BSD-licensed and the model
-  has on the order of a few thousand tree-node parameters, not billions.
-"""
+"""Incremental matching model and F_0.5 threshold selection."""
 
 import numpy as np
-from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.linear_model import SGDClassifier
 
 from features import FEATURE_COLUMNS
 
 
 def train_classifier(X_train, y_train):
-    clf = HistGradientBoostingClassifier(
-        max_iter=300,
-        learning_rate=0.06,
-        max_depth=6,
-        l2_regularization=1.0,
+    clf = _new_classifier()
+    clf.fit(X_train[FEATURE_COLUMNS], y_train)
+    return clf
+
+
+def _new_classifier():
+    return SGDClassifier(
+        loss="log_loss",
+        penalty="l2",
+        alpha=1e-5,
+        max_iter=1,
+        tol=None,
+        average=True,
         random_state=42,
     )
-    clf.fit(X_train[FEATURE_COLUMNS], y_train)
+
+
+def train_classifier_batches(batches):
+    """Fit incrementally so all candidate features never coexist in RAM."""
+    clf = _new_classifier()
+    first_batch = True
+    for X_batch, y_batch in batches:
+        if len(X_batch) == 0:
+            continue
+        clf.partial_fit(
+            X_batch[FEATURE_COLUMNS].astype(np.float32, copy=False),
+            y_batch,
+            classes=np.array([0, 1]) if first_batch else None,
+        )
+        first_batch = False
+    if first_batch:
+        raise ValueError("no training candidates were generated")
     return clf
 
 
@@ -65,7 +79,15 @@ def tune_threshold(clf, X_val, val_pairs_df, truth_map, all_s1_ids, thresholds=N
     """Search a probability threshold that maximizes macro F_0.5 on validation."""
     if thresholds is None:
         thresholds = np.arange(0.05, 0.96, 0.02)
-    probs = clf.predict_proba(X_val[FEATURE_COLUMNS])[:, 1]
+    probs = clf.predict_proba(X_val[FEATURE_COLUMNS].astype(np.float32, copy=False))[:, 1]
+
+    return tune_threshold_from_probs(probs, val_pairs_df, truth_map, all_s1_ids, thresholds)
+
+
+def tune_threshold_from_probs(probs, val_pairs_df, truth_map, all_s1_ids, thresholds=None):
+    """Tune from cached probabilities, avoiding repeated model inference."""
+    if thresholds is None:
+        thresholds = np.arange(0.05, 0.96, 0.02)
 
     best_t, best_score = 0.5, -1.0
     for t in thresholds:

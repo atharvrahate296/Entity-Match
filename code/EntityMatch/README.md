@@ -21,7 +21,7 @@ student_resource/
 cd student_resource
 uv venv env   # Use uv package manager to create virtual environment
 .\env\Scripts\activate
-pip install -r code/EntityMatch/requirements.txt
+uv pip install -r code/EntityMatch/requirements.txt
 ```
 
 Python 3.9+ recommended (developed/tested on 3.12).

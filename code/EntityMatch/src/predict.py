@@ -19,9 +19,10 @@ import argparse
 import os
 
 import joblib
+import pandas as pd
 
 from blocking import generate_candidates
-from data_io import build_lookup, candidates_to_pairs_df, load_source, write_id_list_tsv
+from data_io import build_lookup, load_source, write_id_list_tsv
 from features import build_features
 
 
@@ -40,13 +41,15 @@ def main():
     print(f"[predict] {len(s1)} S1 / {len(s2)} S2 / {len(s3)} S3 test records")
 
     print("[predict] generating candidates (blocking)...")
-    candidates = generate_candidates(s1, s2, s3)
-    pairs_df = candidates_to_pairs_df(candidates)
-    print(f"[predict] {len(pairs_df)} candidate pairs generated")
-
+    candidate_path = os.path.join(args.output_dir, "candidate_pairs_raw.tsv")
+    generate_candidates(s1, s2, s3, out_path=candidate_path)
+    candidate_count = 0
     candidate_map = {}
-    for s1id, oid in zip(pairs_df["source1_entity_id"], pairs_df["candidate_entity_id"]):
-        candidate_map.setdefault(s1id, set()).add(oid)
+    for chunk in pd.read_csv(candidate_path, sep="\t", chunksize=50_000):
+        candidate_count += len(chunk)
+        for s1id, oid in zip(chunk["source1_entity_id"], chunk["candidate_entity_id"]):
+            candidate_map.setdefault(s1id, set()).add(oid)
+    print(f"[predict] {candidate_count} candidate pairs generated")
 
     write_id_list_tsv(
         os.path.join(args.output_dir, "candidate_pairs.tsv"),
@@ -54,9 +57,10 @@ def main():
         candidate_map,
         all_s1_ids,
     )
+    os.remove(candidate_path)
     print("[predict] wrote candidate_pairs.tsv")
 
-    if len(pairs_df) == 0:
+    if candidate_count == 0:
         # No candidates at all -> every S1 entity is a predicted singleton.
         write_id_list_tsv(
             os.path.join(args.output_dir, "matching_results.tsv"),
@@ -75,13 +79,13 @@ def main():
     other_lookup.update(build_lookup(s3))
 
     print("[predict] building features...")
-    X = build_features(pairs_df, s1_lookup, other_lookup)
-    probs = clf.predict_proba(X)[:, 1]
-
     match_map = {}
-    for s1id, oid, p in zip(pairs_df["source1_entity_id"], pairs_df["candidate_entity_id"], probs):
-        if p >= threshold:
-            match_map.setdefault(s1id, set()).add(oid)
+    for chunk in pd.read_csv(candidate_path, sep="\t", chunksize=50_000):
+        features = build_features(chunk, s1_lookup, other_lookup)
+        probs = clf.predict_proba(features)[:, 1]
+        for s1id, oid, p in zip(chunk["source1_entity_id"], chunk["candidate_entity_id"], probs):
+            if p >= threshold:
+                match_map.setdefault(s1id, set()).add(oid)
 
     write_id_list_tsv(
         os.path.join(args.output_dir, "matching_results.tsv"),

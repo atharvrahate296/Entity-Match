@@ -30,7 +30,10 @@ import pandas as pd
 from blocking import generate_candidates
 from data_io import build_lookup, load_ground_truth, load_source
 from features import build_features
-from model import macro_f05, train_classifier, tune_threshold
+from model import train_classifier_batches, tune_threshold_from_probs
+
+
+CANDIDATE_BATCH = 50_000
 
 
 def group_split(s1_ids, val_frac=0.2, seed=42):
@@ -60,42 +63,51 @@ def main():
 
     print("[train] generating candidates (blocking)...")
     generate_candidates(s1, s2, s3, out_path=os.path.join(args.train_dir, "candidate_pairs.tsv"))
-    pairs_df = pd.read_csv(os.path.join(args.train_dir, "candidate_pairs.tsv"), sep="\t")
+    candidate_path = os.path.join(args.train_dir, "candidate_pairs.tsv")
 
     # Blocking recall ceiling: fraction of true matches that made it into candidates.
     total_true = sum(len(v) for v in truth_map.values())
-    s1_ids_in_candidates = set(pairs_df["source1_entity_id"])
-    hit = sum(1 for s1_id in s1_ids_in_candidates if s1_id in truth_map)
+    hit_ids = set()
+    for chunk in pd.read_csv(candidate_path, sep="\t", chunksize=CANDIDATE_BATCH):
+        hit_ids.update(set(chunk["source1_entity_id"]) & set(truth_map))
+    hit = len(hit_ids)
     recall_ceiling = hit / total_true if total_true else 1.0
     print(f"[train] blocking recall ceiling: {recall_ceiling:.4f} ({hit}/{total_true})")
 
-    pairs_df["label"] = [
-        1 if oid in truth_map.get(s1id, set()) else 0
-        for s1id, oid in zip(pairs_df["source1_entity_id"], pairs_df["candidate_entity_id"])
-    ]
-
     train_ids, val_ids = group_split(all_s1_ids, args.val_frac)
-    train_mask = pairs_df["source1_entity_id"].isin(train_ids)
-    val_mask = pairs_df["source1_entity_id"].isin(val_ids)
 
     s1_lookup = build_lookup(s1)
     other_lookup = build_lookup(s2)
     other_lookup.update(build_lookup(s3))
 
-    print("[train] building features...")
-    X_train = build_features(pairs_df[train_mask], s1_lookup, other_lookup)
-    X_val = build_features(pairs_df[val_mask], s1_lookup, other_lookup)
-    y_train = pairs_df.loc[train_mask, "label"].values
-    y_val = pairs_df.loc[val_mask, "label"].values
+    def feature_batches(split_ids):
+        for chunk in pd.read_csv(candidate_path, sep="\t", chunksize=CANDIDATE_BATCH):
+            chunk = chunk[chunk["source1_entity_id"].isin(split_ids)].copy()
+            if chunk.empty:
+                continue
+            chunk["label"] = [
+                int(oid in truth_map.get(s1id, set()))
+                for s1id, oid in zip(chunk["source1_entity_id"], chunk["candidate_entity_id"])
+            ]
+            yield build_features(chunk, s1_lookup, other_lookup), chunk["label"].to_numpy(dtype=np.int8)
 
-    print(f"[train] train pairs: {len(X_train)} (pos={y_train.sum()}), "
-          f"val pairs: {len(X_val)} (pos={y_val.sum()})")
+    print("[train] streaming feature batches...")
+    clf = train_classifier_batches(feature_batches(train_ids))
 
-    clf = train_classifier(X_train, y_train)
-
-    val_pairs_df = pairs_df[val_mask].reset_index(drop=True)
+    val_rows = []
+    val_probs = []
+    val_count = 0
+    for features, _ in feature_batches(val_ids):
+        val_probs.extend(clf.predict_proba(features)[:, 1])
+        val_count += len(features)
+    for chunk in pd.read_csv(candidate_path, sep="\t", chunksize=CANDIDATE_BATCH):
+        val_rows.append(chunk[chunk["source1_entity_id"].isin(val_ids)])
+    val_pairs_df = pd.concat(val_rows, ignore_index=True) if val_rows else pd.DataFrame()
     val_truth = {k: v for k, v in truth_map.items() if k in val_ids}
-    threshold, val_score = tune_threshold(clf, X_val, val_pairs_df, val_truth, val_ids)
+    threshold, val_score = tune_threshold_from_probs(
+        np.asarray(val_probs), val_pairs_df, val_truth, val_ids
+    )
+    print(f"[train] validation pairs: {val_count}")
     print(f"[train] tuned threshold={threshold:.2f} -> validation macro F_0.5={val_score:.4f}")
 
     os.makedirs(os.path.dirname(args.model_out) or ".", exist_ok=True)
