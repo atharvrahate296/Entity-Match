@@ -8,9 +8,9 @@ available when this pipeline was built.
 
 To generate the real files, from your `student_resource/` root:
 
-    python3 code/EntityMatch/src/train.py
-    python3 code/EntityMatch/src/predict.py
-    python3 utils/validate_submission.py \
+    python code/src/train.py
+    python code/src/predict.py
+    python utils/validate_submission.py \
         --matching output/matching_results.tsv \
         --candidate output/candidate_pairs.tsv \
         --test-dir dataset/test

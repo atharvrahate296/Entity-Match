@@ -1,8 +1,21 @@
-env
-/env
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
 env/
-./dataset
-dataset/*
-dataset
-output/*
-/output
+venv/
+.venv/
+virtualenv/
+
+# Datasets and Outputs
+dataset/
+output/
+models/
+
+# IDE/System
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -134,10 +134,10 @@ against the real dataset.]*
 
 ### A. Code Artefacts
 
-Runnable pipeline ships under `code/EntityMatch/`:
+Runnable pipeline ships under `code/`:
 
 ```
-code/EntityMatch/
+code/
 ├── README.md              # exact run instructions
 ├── requirements.txt       # pinned dependencies
 └── src/
@@ -153,8 +153,8 @@ code/EntityMatch/
 Entry points (run from `student_resource/`, see `README.md` for details):
 
 ```bash
-python3 code/EntityMatch/src/train.py
-python3 code/EntityMatch/src/predict.py
+python3 code/src/train.py
+python3 code/src/predict.py
 python3 utils/validate_submission.py \
     --matching output/matching_results.tsv \
     --candidate output/candidate_pairs.tsv \
