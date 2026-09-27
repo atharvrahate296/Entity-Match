@@ -25,7 +25,10 @@ student_resource/
         ├── features.py
         ├── model.py
         ├── data_io.py
+        ├── validate.py
+        ├── Score_predictions.py
         └── normalize.py
+
 ```
 
 ```bash
@@ -126,7 +129,7 @@ A `PASS` here means the files are safe to upload; copy
 `code/` folder and the filled-in `Documentation_template.md`, into your
 `<team_name>_submission.zip`.
 
-## 4. Score prediction
+## 4. Score prediction and validation
 ```
 python code/src/score_predictions.py --predictions output/validation/matching_results.tsv --ground-truth dataset/train/train_ground_truth.tsv --only-ids output/validation/val_ids.txt
 ```
