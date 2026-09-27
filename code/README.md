@@ -116,6 +116,8 @@ python utils/validate_submission.py \
     --candidate output/candidate_pairs.tsv \
     --test-dir dataset/test
 ```
+python utils/validate_submission.py --matching output/matching_results.tsv --candidate output/candidate_pairs.tsv --test-dir dataset/test
+
 
 Add `--check-ids` for the stricter (heavier) check that every matched/
 candidate ID actually exists in `test_source2.tsv` / `test_source3.tsv`.
@@ -123,6 +125,11 @@ A `PASS` here means the files are safe to upload; copy
 `output/matching_results.tsv` and `output/candidate_pairs.tsv`, plus this
 `code/` folder and the filled-in `Documentation_template.md`, into your
 `<team_name>_submission.zip`.
+
+## 4. Score prediction
+```
+python code/src/score_predictions.py --predictions output/validation/matching_results.tsv --ground-truth dataset/train/train_ground_truth.tsv --only-ids output/validation/val_ids.txt
+```
 
 ## Pipeline design (laptop-safe)
 

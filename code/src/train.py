@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Train the entity-resolution matcher — laptop-safe, batched, stratified.
 
 Why sampling? The full train set is 2.2M S1 x 10M S2/S3 records; blocking
@@ -38,7 +37,8 @@ import numpy as np
 import pandas as pd
 
 from blocking import generate_candidates
-from data_io import (build_entity_cache, collect_candidate_oids, load_ground_truth,
+from data_io import (build_entity_cache, build_entity_cache_from_path,
+                     collect_candidate_oids, load_ground_truth,
                      load_source, write_candidate_id_list)
 from features import build_features
 from model import train_classifier_batches, tune_threshold_from_probs
@@ -100,16 +100,22 @@ def main():
     ap.add_argument("--output-dir", default="output")
     ap.add_argument("--val-frac", type=float, default=0.2)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--max-train-s1", type=int, default=100_000,
+    ap.add_argument("--max-train-s1", type=int, default=200_000,
                     help="Stratified cap on training S1 entities (bounds RAM/time).")
-    ap.add_argument("--max-val-s1", type=int, default=20_000,
+    ap.add_argument("--max-val-s1", type=int, default=40_000,
                     help="Stratified cap on validation S1 entities.")
     ap.add_argument("--s1-limit", type=int, default=0,
                     help="Smoke-test: use only first N S1 rows (0 = off).")
-    ap.add_argument("--top-k", type=int, default=10)
+    ap.add_argument("--top-k", type=int, default=20,
+                    help="Must match blocking.py's module-level TOP_K, and "
+                         "must match validate.py's/predict.py's --top-k for "
+                         "an apples-to-apples comparison later.")
     ap.add_argument("--feature-batch", type=int, default=CANDIDATE_BATCH)
     ap.add_argument("--workers", type=int, default=4,
                     help="Feature threads (rapidfuzz releases the GIL).")
+    ap.add_argument("--blocking-workers", type=int, default=None,
+                    help="Unused by the current token-index blocking.py "
+                         "(kept for CLI compatibility with older invocations).")
     args = ap.parse_args()
     t_all = time.time()
 
@@ -133,10 +139,10 @@ def main():
         os.path.join(args.train_dir, "train_ground_truth.tsv"), keep_ids=sample_ids)
     print(f"[train] truth entries for sample: {len(truth_map)}", flush=True)
 
-    print("[train] loading S2/S3 reference tables...", flush=True)
-    s2 = load_source(os.path.join(args.train_dir, "train_source2.tsv"))
-    s3 = load_source(os.path.join(args.train_dir, "train_source3.tsv"))
-    print(f"[train] S2={len(s2)} S3={len(s3)}", flush=True)
+    print("[train] reference tables will stream from disk per country (low-RAM)...",
+          flush=True)
+    s2_path = os.path.join(args.train_dir, "train_source2.tsv")
+    s3_path = os.path.join(args.train_dir, "train_source3.tsv")
 
     s1_sample = s1[s1["entity_id"].isin(sample_ids)].copy()
     del s1
@@ -144,7 +150,8 @@ def main():
     print(f"[train] blocking on {len(s1_sample)} sampled S1...", flush=True)
     scored_path = os.path.join(args.output_dir, "_train_candidates_scored.tsv")
     n_pairs, n_s1 = generate_candidates(
-        s1_sample, s2, s3, out_path=scored_path, top_k=args.top_k)
+        s1_sample, s2_path, s3_path, out_path=scored_path, top_k=args.top_k,
+        n_workers=args.blocking_workers)
     if n_pairs == 0:
         raise ValueError("blocking produced no candidates")
 
@@ -166,18 +173,17 @@ def main():
         scored_path, os.path.join(args.output_dir, "candidate_pairs_train.tsv"),
         list(sample_ids))
 
-    # Cache only needed entities, then free the big frames.
+    # Cache only needed entities (streamed from disk by id — never preload
+    # the full 10M-row S2/S3 tables).
     print("[train] building entity caches...", flush=True)
     oids = collect_candidate_oids(scored_path)
     print(f"[train] unique candidate S2/S3 ids: {len(oids)}", flush=True)
     s1_cache = build_entity_cache(s1_sample, sample_ids)
     del s1_sample
     gc.collect()
-    ref_cache = build_entity_cache(s2, oids)
-    del s2
+    ref_cache = build_entity_cache_from_path(s2_path, oids)
     gc.collect()
-    ref_cache.update(build_entity_cache(s3, oids))
-    del s3
+    ref_cache.update(build_entity_cache_from_path(s3_path, oids))
     gc.collect()
     print(f"[train] caches: S1={len(s1_cache)} refs={len(ref_cache)} "
           f"({time.time() - t_all:.0f}s elapsed)", flush=True)

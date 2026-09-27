@@ -61,22 +61,27 @@ def build_lookup(df):
 
 # --- Low-memory entity cache -----------------------------------------------
 # Tuple layout (positional, to avoid per-entity dict overhead for millions
-# of entities): (norm_name, norm_address, business_address, country,
-#                name_toks, addr_toks, first_tok, postal)
-C_NAME, C_ADDR, C_RAW_ADDR, C_COUNTRY = 0, 1, 2, 3
-C_NAME_TOKS, C_ADDR_TOKS, C_FIRST_TOK, C_POSTAL = 4, 5, 6, 7
+# of entities): (norm_name, norm_address, country, postal).
+#
+# Previously this also stored the raw (un-normalized) business_address and
+# precomputed frozenset token sets for name/address. Neither is worth the
+# memory at scale: the raw address is never read by features.py (only the
+# normalized string and the postal code extracted from it are used), and
+# the frozensets cost several hundred bytes each once you count their own
+# object overhead plus a separate string object per token. With millions
+# of entities cached at once (S1 sample/full set + referenced S2/S3), that
+# was enough extra memory to tip a 16GB machine into an out-of-memory
+# crash. Token sets and the first-token value are cheap to recompute with
+# a plain str.split() right when features.py needs them, so they're no
+# longer stored here at all.
+C_NAME, C_ADDR, C_COUNTRY, C_POSTAL = 0, 1, 2, 3
 
 
 def build_entity_cache(df, ids=None):
-    """Build a compact per-entity cache with precomputed features.
-
-    Only entities in `ids` are cached (when given), so the training run
-    caches just the sampled S1 rows + the referenced S2/S3 rows instead of
-    all ~10M records. Token sets, lengths are derived on the fly from the
-    cached strings; postal codes are precomputed (regex per pair was a
-    major feature-stage cost).
+    """Build a compact per-entity cache: (norm_name, norm_address, country,
+    postal_code). Only entities in `ids` are cached (when given).
     """
-    from normalize import extract_postal_code, token_set
+    from normalize import extract_postal_code
 
     if ids is not None:
         ids = set(ids)
@@ -90,13 +95,49 @@ def build_entity_cache(df, ids=None):
         cache[d["entity_id"]] = (
             nn,
             na,
-            d["business_address"],
             d["country"],
-            frozenset(nn.split()) if nn else frozenset(),
-            frozenset(na.split()) if na else frozenset(),
-            nn.split(" ", 1)[0] if nn else "",
             extract_postal_code(d["business_address"]),
         )
+    return cache
+
+
+def build_entity_cache_from_path(path, ids, chunksize=200_000):
+    """Stream a source TSV from disk, caching only rows whose id is in `ids`.
+
+    Low-RAM alternative to load_source()+build_entity_cache(): never holds
+    the full table, only matching rows (candidate refs are a small fraction
+    of the 10M-row tables).
+    """
+    from normalize import extract_postal_code, normalize_name, normalize_address
+
+    want = set(ids)
+    cache = {}
+    if not want:
+        return cache
+    for chunk in pd.read_csv(path, sep="\t", dtype=str, keep_default_na=False,
+                             chunksize=chunksize):
+        chunk = chunk[chunk["entity_id"].isin(want)]
+        if chunk.empty:
+            continue
+        has_norm = "norm_name" in chunk.columns and "norm_address" in chunk.columns
+        for row in chunk.itertuples(index=False):
+            d = row._asdict()
+            eid = d["entity_id"]
+            if eid not in want or eid in cache:
+                continue
+            nn = d["norm_name"] if has_norm else normalize_name(d["business_name"])
+            na = d["norm_address"] if has_norm else normalize_address(d["business_address"])
+            cache[eid] = (
+                nn,
+                na,
+                d["country"],
+                extract_postal_code(d["business_address"]),
+            )
+            if len(cache) >= len(want):
+                break
+        del chunk
+        if len(cache) >= len(want):
+            break
     return cache
 
 
